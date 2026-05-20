@@ -41,18 +41,15 @@ export async function handleEmbeddings(request) {
     log.debug("AUTH", "No API key provided (local mode)");
   }
 
-  // Enforce API key if enabled in settings
   const settings = await getSettings();
-  if (settings.requireApiKey) {
-    if (!apiKey) {
-      log.warn("AUTH", "Missing API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-    }
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) {
-      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
-    }
+  if (!apiKey) {
+    log.warn("AUTH", "Missing API key");
+    return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
+  }
+  const valid = await isValidApiKey(apiKey);
+  if (!valid) {
+    log.warn("AUTH", "Invalid API key");
+    return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
   if (!modelStr) {
@@ -85,7 +82,12 @@ export async function handleEmbeddings(request) {
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { apiKey });
+
+    if (credentials?.apiKeyForbidden) {
+      log.warn("AUTH", `API key forbidden for ${provider}: ${credentials.reason}`);
+      return errorResponse(HTTP_STATUS.FORBIDDEN, `API key is not authorized for provider: ${provider}`);
+    }
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {

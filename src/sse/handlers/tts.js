@@ -33,12 +33,10 @@ export async function handleTts(request) {
   log.request("POST", `${url.pathname} | ${modelStr} | format=${responseFormat}${language ? ` | lang=${language}` : ""}`);
 
   const settings = await getSettings();
-  if (settings.requireApiKey) {
-    const apiKey = extractApiKey(request);
-    if (!apiKey) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
-  }
+  const apiKey = extractApiKey(request);
+  if (!apiKey) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
+  const valid = await isValidApiKey(apiKey);
+  if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.input) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
@@ -84,7 +82,11 @@ async function handleSingleModelTts(body, modelStr, responseFormat, language) {
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { apiKey });
+
+    if (credentials?.apiKeyForbidden) {
+      return errorResponse(HTTP_STATUS.FORBIDDEN, `API key is not authorized for provider: ${provider}`);
+    }
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {

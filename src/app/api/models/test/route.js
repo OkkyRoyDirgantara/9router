@@ -2,21 +2,24 @@ import { NextResponse } from "next/server";
 import { getApiKeys } from "@/lib/localDb";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 
 const CLI_TOKEN_SALT = "9r-cli-auth";
 
 // POST /api/models/test - Ping a single model via internal completions or embeddings
 export async function POST(request) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const { model, kind } = await request.json();
     if (!model) return NextResponse.json({ error: "Model required" }, { status: 400 });
 
     const baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`;
 
-    // Get an active internal API key for auth (if requireApiKey is enabled)
     let apiKey = null;
     try {
-      const keys = await getApiKeys();
+      const keys = await getApiKeys(user.userId);
       apiKey = keys.find((k) => k.isActive !== false)?.key || null;
     } catch {}
 

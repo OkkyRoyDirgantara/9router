@@ -87,6 +87,7 @@ async function flushToDatabase() {
 
           const record = {
             id: item.id,
+            userId: item.userId || null,
             provider: item.provider || null,
             model: item.model || null,
             connectionId: item.connectionId || null,
@@ -101,8 +102,8 @@ async function flushToDatabase() {
           };
 
           db.run(
-            `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data`,
-            [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record)]
+            `INSERT INTO requestDetails(id, userId, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET userId = COALESCE(excluded.userId, requestDetails.userId), timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data`,
+            [record.id, record.userId, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record)]
           );
         }
 
@@ -146,6 +147,7 @@ export async function getRequestDetails(filter = {}) {
   const conds = [];
   const params = [];
 
+  if (filter.userId) { conds.push("userId = ?"); params.push(filter.userId); }
   if (filter.provider) { conds.push("provider = ?"); params.push(filter.provider); }
   if (filter.model) { conds.push("model = ?"); params.push(filter.model); }
   if (filter.connectionId) { conds.push("connectionId = ?"); params.push(filter.connectionId); }
@@ -174,9 +176,11 @@ export async function getRequestDetails(filter = {}) {
   };
 }
 
-export async function getRequestDetailById(id) {
+export async function getRequestDetailById(id, userId) {
   const db = await getAdapter();
-  const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
+  const row = userId
+    ? db.get(`SELECT data FROM requestDetails WHERE id = ? AND userId = ?`, [id, userId])
+    : db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
   return row ? parseJson(row.data, null) : null;
 }
 

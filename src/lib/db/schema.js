@@ -1,5 +1,5 @@
 // Latest schema version — bumped when a migration is added in ./migrations/
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -27,9 +27,31 @@ export const TABLES = {
       data: "TEXT NOT NULL",
     },
   },
+  users: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      username: "TEXT UNIQUE NOT NULL",
+      passwordHash: "TEXT NOT NULL",
+      role: "TEXT NOT NULL DEFAULT 'user'",
+      isActive: "INTEGER DEFAULT 1",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)",
+      "CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)",
+    ],
+  },
+  userSettings: {
+    columns: {
+      userId: "TEXT PRIMARY KEY",
+      data: "TEXT NOT NULL",
+    },
+  },
   providerConnections: {
     columns: {
       id: "TEXT PRIMARY KEY",
+      userId: "TEXT",
       provider: "TEXT NOT NULL",
       authType: "TEXT NOT NULL",
       name: "TEXT",
@@ -44,6 +66,7 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_pc_provider ON providerConnections(provider)",
       "CREATE INDEX IF NOT EXISTS idx_pc_provider_active ON providerConnections(provider, isActive)",
       "CREATE INDEX IF NOT EXISTS idx_pc_priority ON providerConnections(provider, priority)",
+      "CREATE INDEX IF NOT EXISTS idx_pc_user ON providerConnections(userId)",
     ],
   },
   providerNodes: {
@@ -74,24 +97,35 @@ export const TABLES = {
   apiKeys: {
     columns: {
       id: "TEXT PRIMARY KEY",
+      userId: "TEXT",
       key: "TEXT UNIQUE NOT NULL",
       name: "TEXT",
       machineId: "TEXT",
       isActive: "INTEGER DEFAULT 1",
+      allowedProviders: "TEXT",
+      allowedConnectionIds: "TEXT",
       createdAt: "TEXT NOT NULL",
     },
-    indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)",
+      "CREATE INDEX IF NOT EXISTS idx_ak_user ON apiKeys(userId)",
+    ],
   },
   combos: {
     columns: {
       id: "TEXT PRIMARY KEY",
-      name: "TEXT UNIQUE NOT NULL",
+      userId: "TEXT",
+      name: "TEXT NOT NULL",
       kind: "TEXT",
       models: "TEXT NOT NULL",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },
-    indexes: ["CREATE INDEX IF NOT EXISTS idx_combo_name ON combos(name)"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_combo_name ON combos(name)",
+      "CREATE INDEX IF NOT EXISTS idx_combo_user ON combos(userId)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_combo_user_name ON combos(userId, name)",
+    ],
   },
   kv: {
     columns: {
@@ -105,6 +139,7 @@ export const TABLES = {
   usageHistory: {
     columns: {
       id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      userId: "TEXT",
       timestamp: "TEXT NOT NULL",
       provider: "TEXT",
       model: "TEXT",
@@ -123,6 +158,7 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_uh_provider ON usageHistory(provider)",
       "CREATE INDEX IF NOT EXISTS idx_uh_model ON usageHistory(model)",
       "CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
+      "CREATE INDEX IF NOT EXISTS idx_uh_user ON usageHistory(userId)",
     ],
   },
   usageDaily: {
@@ -134,6 +170,7 @@ export const TABLES = {
   requestDetails: {
     columns: {
       id: "TEXT PRIMARY KEY",
+      userId: "TEXT",
       timestamp: "TEXT NOT NULL",
       provider: "TEXT",
       model: "TEXT",
@@ -146,6 +183,7 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_provider ON requestDetails(provider)",
       "CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
+      "CREATE INDEX IF NOT EXISTS idx_rd_user ON requestDetails(userId)",
     ],
   },
 };
@@ -155,3 +193,20 @@ export function buildCreateTableSql(name, def) {
   if (def.primaryKey) cols.push(def.primaryKey);
   return `CREATE TABLE IF NOT EXISTS ${name} (${cols.join(", ")})`;
 }
+
+// Fields that were moved from global `settings` to per-user `userSettings`.
+// Kept here as a single source of truth used by both the migration and
+// the settings/userSettings repos.
+export const USER_SCOPED_SETTING_KEYS = [
+  "comboStrategy",
+  "comboStrategies",
+  "stickyRoundRobinLimit",
+  "comboStickyRoundRobinLimit",
+  "providerStrategies",
+  "outboundProxyEnabled",
+  "outboundProxyUrl",
+  "outboundNoProxy",
+  "rtkEnabled",
+  "cavemanEnabled",
+  "cavemanLevel",
+];

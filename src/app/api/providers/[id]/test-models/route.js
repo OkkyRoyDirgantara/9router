@@ -4,14 +4,12 @@ import { getProviderModels, PROVIDER_ID_TO_ALIAS } from "open-sse/config/provide
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 
 const CLI_TOKEN_SALT = "9r-cli-auth";
 
-/**
- * Get an active API key to pass through auth when requireApiKey is enabled.
- */
-async function getInternalApiKey() {
-  const keys = await getApiKeys();
+async function getInternalApiKey(userId) {
+  const keys = await getApiKeys(userId);
   return keys.find((k) => k.isActive !== false)?.key || null;
 }
 
@@ -57,8 +55,11 @@ async function pingModel(modelId, baseUrl, apiKey, cliToken) {
  */
 export async function POST(request, { params }) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const { id } = await params;
-    const connection = await getProviderConnectionById(id);
+    const connection = await getProviderConnectionById(id, user.userId);
     if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
@@ -86,7 +87,7 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: "No models configured for this provider" }, { status: 400 });
     }
 
-    const apiKey = await getInternalApiKey();
+    const apiKey = await getInternalApiKey(user.userId);
     // Bypass dashboardGuard for internal self-call via CLI token (machineId-based)
     const cliToken = await getConsistentMachineId(CLI_TOKEN_SALT);
 

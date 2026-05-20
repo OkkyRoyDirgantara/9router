@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
-import { getSettings } from "@/lib/localDb";
-import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
+import bcrypt from "bcryptjs";
+import {
+  getSettings,
+  verifyPassword,
+  userCount,
+  createUser,
+  getUserByUsername,
+} from "@/lib/localDb";
 import { setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
 import { isOidcConfigured } from "@/lib/auth/oidc";
 
@@ -12,40 +18,73 @@ function isTunnelRequest(request, settings) {
   return (tunnelHost && host === tunnelHost) || (tailscaleHost && host === tailscaleHost);
 }
 
+// First-run bootstrap: when no users exist yet, accept the legacy global
+// password or INITIAL_PASSWORD and provision an `admin` user on the fly.
+async function bootstrapAdminIfNeeded(settings, password) {
+  const total = await userCount();
+  if (total > 0) return null;
+
+  const storedHash = settings.password;
+  let ok = false;
+  if (storedHash) {
+    try { ok = await bcrypt.compare(password, storedHash); } catch { ok = false; }
+  } else {
+    ok = password === (process.env.INITIAL_PASSWORD || "123456");
+  }
+  if (!ok) return null;
+
+  return await createUser({ username: "admin", password, role: "admin" });
+}
+
 export async function POST(request) {
   try {
-    const { password } = await request.json();
+    const body = await request.json();
+    const username = typeof body?.username === "string" ? body.username.trim() : "admin";
+    const password = body?.password;
     const settings = await getSettings();
 
-    // Block login via tunnel/tailscale if dashboard access is disabled
     if (isTunnelRequest(request, settings) && settings.tunnelDashboardAccess !== true) {
       return NextResponse.json({ error: "Dashboard access via tunnel is disabled" }, { status: 403 });
     }
-
-    // Default password is '123456' if not set
-    const storedHash = settings.password;
 
     if (settings.authMode === "oidc" && isOidcConfigured(settings)) {
       return NextResponse.json({ error: "Password login is disabled. Use OIDC sign in." }, { status: 403 });
     }
 
-    let isValid = false;
-    if (storedHash) {
-      isValid = await bcrypt.compare(password, storedHash);
-    } else {
-      // Use env var or default
-      const initialPassword = process.env.INITIAL_PASSWORD || "123456";
-      isValid = password === initialPassword;
+    if (!password || typeof password !== "string") {
+      return NextResponse.json({ error: "Password required" }, { status: 400 });
     }
 
-    if (isValid) {
-      const cookieStore = await cookies();
-      await setDashboardAuthCookie(cookieStore, request);
+    let user = await verifyPassword(username, password);
 
-      return NextResponse.json({ success: true });
+    // First-run: no users yet. Bootstrap an admin from legacy password.
+    if (!user) {
+      const bootstrapped = await bootstrapAdminIfNeeded(settings, password);
+      if (bootstrapped && (username === "admin" || !username)) {
+        user = await getUserByUsername("admin");
+        // Strip hash before returning to caller
+        if (user) {
+          const { passwordHash: _h, ...safe } = user;
+          user = safe;
+        }
+      }
     }
 
-    return NextResponse.json({ error: "Invalid password" }, { status: 401 });
+    if (!user) {
+      return NextResponse.json({ error: "Invalid username or password" }, { status: 401 });
+    }
+
+    const cookieStore = await cookies();
+    await setDashboardAuthCookie(cookieStore, request, {
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+    });
+
+    return NextResponse.json({
+      success: true,
+      user: { id: user.id, username: user.username, role: user.role },
+    });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

@@ -6,6 +6,7 @@ function rowToCombo(row) {
   if (!row) return null;
   return {
     id: row.id,
+    userId: row.userId || null,
     name: row.name,
     kind: row.kind,
     models: parseJson(row.models, []),
@@ -14,21 +15,27 @@ function rowToCombo(row) {
   };
 }
 
-export async function getCombos() {
+export async function getCombos(userId) {
   const db = await getAdapter();
-  const rows = db.all(`SELECT * FROM combos ORDER BY createdAt ASC`);
+  const rows = userId
+    ? db.all(`SELECT * FROM combos WHERE userId = ? ORDER BY createdAt ASC`, [userId])
+    : db.all(`SELECT * FROM combos ORDER BY createdAt ASC`);
   return rows.map(rowToCombo);
 }
 
-export async function getComboById(id) {
+export async function getComboById(id, userId) {
   const db = await getAdapter();
-  const row = db.get(`SELECT * FROM combos WHERE id = ?`, [id]);
+  const row = userId
+    ? db.get(`SELECT * FROM combos WHERE id = ? AND userId = ?`, [id, userId])
+    : db.get(`SELECT * FROM combos WHERE id = ?`, [id]);
   return rowToCombo(row);
 }
 
-export async function getComboByName(name) {
+export async function getComboByName(name, userId) {
   const db = await getAdapter();
-  const row = db.get(`SELECT * FROM combos WHERE name = ?`, [name]);
+  const row = userId
+    ? db.get(`SELECT * FROM combos WHERE name = ? AND userId = ?`, [name, userId])
+    : db.get(`SELECT * FROM combos WHERE name = ?`, [name]);
   return rowToCombo(row);
 }
 
@@ -37,6 +44,7 @@ export async function createCombo(data) {
   const now = new Date().toISOString();
   const combo = {
     id: uuidv4(),
+    userId: data.userId || null,
     name: data.name,
     kind: data.kind || null,
     models: data.models || [],
@@ -44,17 +52,19 @@ export async function createCombo(data) {
     updatedAt: now,
   };
   db.run(
-    `INSERT INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
-    [combo.id, combo.name, combo.kind, stringifyJson(combo.models), combo.createdAt, combo.updatedAt]
+    `INSERT INTO combos(id, userId, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+    [combo.id, combo.userId, combo.name, combo.kind, stringifyJson(combo.models), combo.createdAt, combo.updatedAt]
   );
   return combo;
 }
 
-export async function updateCombo(id, data) {
+export async function updateCombo(id, data, userId) {
   const db = await getAdapter();
   let result = null;
   db.transaction(() => {
-    const row = db.get(`SELECT * FROM combos WHERE id = ?`, [id]);
+    const row = userId
+      ? db.get(`SELECT * FROM combos WHERE id = ? AND userId = ?`, [id, userId])
+      : db.get(`SELECT * FROM combos WHERE id = ?`, [id]);
     if (!row) return;
     const merged = { ...rowToCombo(row), ...data, updatedAt: new Date().toISOString() };
     db.run(
@@ -66,8 +76,10 @@ export async function updateCombo(id, data) {
   return result;
 }
 
-export async function deleteCombo(id) {
+export async function deleteCombo(id, userId) {
   const db = await getAdapter();
-  const res = db.run(`DELETE FROM combos WHERE id = ?`, [id]);
+  const res = userId
+    ? db.run(`DELETE FROM combos WHERE id = ? AND userId = ?`, [id, userId])
+    : db.run(`DELETE FROM combos WHERE id = ?`, [id]);
   return (res?.changes ?? 0) > 0;
 }

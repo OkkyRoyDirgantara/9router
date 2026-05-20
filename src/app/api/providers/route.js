@@ -6,6 +6,7 @@ import {
   getProviderNodes,
   getProxyPoolById,
 } from "@/models";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
@@ -46,10 +47,17 @@ async function normalizeProxyPoolId(proxyPoolId) {
   return { proxyPoolId: normalizedId };
 }
 
-// GET /api/providers - List all connections
-export async function GET() {
+// GET /api/providers - List connections for current user (admin can pass ?all=1)
+export async function GET(request) {
   try {
-    const connections = await getProviderConnections();
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const url = new URL(request.url);
+    const wantAll = user.role === "admin" && url.searchParams.get("all") === "1";
+    const connections = await getProviderConnections(
+      wantAll ? {} : { userId: user.userId }
+    );
 
     // Build nodeNameMap for compatible providers (id → name)
     let nodeNameMap = {};
@@ -86,6 +94,8 @@ export async function GET() {
 // POST /api/providers - Create new connection (API Key only, OAuth via separate flow)
 export async function POST(request) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const body = await request.json();
     const provider = normalizeProviderId(body.provider);
     const { apiKey, name, displayName, priority, globalPriority, defaultModel, testStatus } = body;
@@ -167,6 +177,7 @@ export async function POST(request) {
     }
 
     const newConnection = await createProviderConnection({
+      userId: user.userId,
       provider,
       authType: isWebCookieProvider ? "cookie" : "apikey",
       name: connectionName,

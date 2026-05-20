@@ -8,6 +8,8 @@ import {
 import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
+import { getApiKeyContext } from "@/dashboardGuard";
+import { getDashboardUser } from "@/lib/auth/dashboardSession";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -137,18 +139,27 @@ function comboMatchesKinds(combo, kindFilter) {
  * Build OpenAI-format models list filtered by service kinds.
  * @param {string[]} kindFilter - List of service kinds to include (e.g. ["llm"], ["webSearch","webFetch"]).
  */
-export async function buildModelsList(kindFilter) {
+export async function buildModelsList(kindFilter, scope = null) {
+  const hasScope = !!scope?.userId;
+  const userId = scope?.userId || null;
+  const allowedProviders = Array.isArray(scope?.allowedProviders) ? new Set(scope.allowedProviders) : null;
+  const allowedConnectionIds = Array.isArray(scope?.allowedConnectionIds) ? new Set(scope.allowedConnectionIds) : null;
+
   let connections = [];
+  let connectionsLoaded = true;
   try {
-    connections = await getProviderConnections();
-    connections = connections.filter(c => c.isActive !== false);
+    connections = await getProviderConnections(userId ? { userId } : {});
+    connections = connections.filter((c) => c.isActive !== false);
+    if (allowedProviders) connections = connections.filter((c) => allowedProviders.has(c.provider));
+    if (allowedConnectionIds) connections = connections.filter((c) => allowedConnectionIds.has(c.id));
   } catch (e) {
+    connectionsLoaded = false;
     console.log("Could not fetch providers, returning all models");
   }
 
   let combos = [];
   try {
-    combos = await getCombos();
+    combos = await getCombos(userId);
   } catch (e) {
     console.log("Could not fetch combos");
   }
@@ -198,7 +209,13 @@ export async function buildModelsList(kindFilter) {
     models.push(entry);
   }
 
-  if (connections.length === 0) {
+  // When a user scope is active, an empty connection list means "this user has
+  // no providers" — return empty, do NOT fall back to the static catalog (that
+  // would leak the global model list across users). Static fallback only kicks
+  // in when DB itself is unreachable, or when no scope is active.
+  const shouldStaticFallback =
+    connections.length === 0 && (!connectionsLoaded || !hasScope);
+  if (shouldStaticFallback) {
     // DB unavailable -> return static models, filtered by per-model kind
     const aliasToProviderId = Object.fromEntries(
       Object.entries(PROVIDER_ID_TO_ALIAS).map(([id, alias]) => [alias, id])
@@ -416,9 +433,12 @@ export async function OPTIONS() {
  * GET /v1/models - OpenAI compatible models list (LLM/chat models only by default).
  * For other capabilities use /v1/models/{kind} (image, tts, stt, embedding, image-to-text, web).
  */
-export async function GET() {
+export async function GET(request) {
   try {
-    const data = await buildModelsList([LLM_KIND]);
+    const apiKeyScope = await getApiKeyContext(request);
+    const dashboardUser = apiKeyScope ? null : await getDashboardUser(request);
+    const scope = apiKeyScope || (dashboardUser?.userId ? { userId: dashboardUser.userId } : null);
+    const data = await buildModelsList([LLM_KIND], scope);
     return Response.json({ object: "list", data }, {
       headers: { "Access-Control-Allow-Origin": "*" },
     });

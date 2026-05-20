@@ -1,30 +1,51 @@
 import { NextResponse } from "next/server";
-import { getSettings, updateSettings } from "@/lib/localDb";
+import {
+  getSettings,
+  updateSettings,
+  getUserSettings,
+  updateUserSettings,
+} from "@/lib/localDb";
+import { USER_SCOPED_SETTING_KEYS } from "@/lib/db/schema";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
-import bcrypt from "bcryptjs";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const SETTINGS_RESPONSE_HEADERS = {
-  "Cache-Control": "no-store"
-};
+const SETTINGS_RESPONSE_HEADERS = { "Cache-Control": "no-store" };
+const USER_KEYS = new Set(USER_SCOPED_SETTING_KEYS);
 
-export async function GET() {
+function splitBody(body) {
+  const userPatch = {};
+  const globalPatch = {};
+  for (const [k, v] of Object.entries(body || {})) {
+    if (USER_KEYS.has(k)) userPatch[k] = v;
+    else globalPatch[k] = v;
+  }
+  return { userPatch, globalPatch };
+}
+
+export async function GET(request) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const settings = await getSettings();
-    const { password, oidcClientSecret, ...safeSettings } = settings;
-    safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
-    
+    const userSettings = await getUserSettings(user.userId);
+    const { password: _pw, oidcClientSecret, ...safeSettings } = settings;
+    const merged = { ...safeSettings, ...userSettings };
+    merged.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
+
     const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS === "true";
     const enableTranslator = process.env.ENABLE_TRANSLATOR === "true";
-    
-    return NextResponse.json({ 
-      ...safeSettings, 
+
+    return NextResponse.json({
+      ...merged,
       enableRequestLogs,
       enableTranslator,
-      hasPassword: !!password
+      hasPassword: true, // per-user password lives in users table
+      currentUser: { id: user.userId, username: user.username, role: user.role },
     }, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
     console.log("Error getting settings:", error);
@@ -34,65 +55,57 @@ export async function GET() {
 
 export async function PATCH(request) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const body = await request.json();
 
-    // If updating password, hash it
-    if (body.newPassword) {
-      const settings = await getSettings();
-      const currentHash = settings.password;
-
-      // Verify current password if it exists
-      if (currentHash) {
-        if (!body.currentPassword) {
-          return NextResponse.json({ error: "Current password required" }, { status: 400 });
-        }
-        const isValid = await bcrypt.compare(body.currentPassword, currentHash);
-        if (!isValid) {
-          return NextResponse.json({ error: "Invalid current password" }, { status: 401 });
-        }
-      } else {
-        // First time setting password, no current password needed
-        // Allow empty currentPassword or default "123456"
-        if (body.currentPassword && body.currentPassword !== "123456") {
-           return NextResponse.json({ error: "Invalid current password" }, { status: 401 });
-        }
-      }
-
-      const salt = await bcrypt.genSalt(10);
-      body.password = await bcrypt.hash(body.newPassword, salt);
-      delete body.newPassword;
-      delete body.currentPassword;
+    // Password changes belong to /api/auth/me/password — not handled here anymore.
+    if (body.newPassword || body.currentPassword) {
+      return NextResponse.json(
+        { error: "Use /api/auth/me/password to change your password" },
+        { status: 400 }
+      );
     }
 
-    if (Object.prototype.hasOwnProperty.call(body, "oidcClientSecret")) {
-      if (!body.oidcClientSecret || !String(body.oidcClientSecret).trim()) {
-        delete body.oidcClientSecret;
-      }
+    const { userPatch, globalPatch } = splitBody(body);
+    const wantsGlobalChange = Object.keys(globalPatch).length > 0;
+    if (wantsGlobalChange && user.role !== "admin") {
+      return NextResponse.json({ error: "Forbidden: admin only" }, { status: 403 });
     }
 
-    const settings = await updateSettings(body);
-
-    // Apply outbound proxy settings immediately (no restart required)
     if (
-      Object.prototype.hasOwnProperty.call(body, "outboundProxyEnabled") ||
-      Object.prototype.hasOwnProperty.call(body, "outboundProxyUrl") ||
-      Object.prototype.hasOwnProperty.call(body, "outboundNoProxy")
+      Object.prototype.hasOwnProperty.call(globalPatch, "oidcClientSecret") &&
+      (!globalPatch.oidcClientSecret || !String(globalPatch.oidcClientSecret).trim())
     ) {
-      applyOutboundProxyEnv(settings);
+      delete globalPatch.oidcClientSecret;
     }
 
-    // Invalidate combo rotation state when strategy settings change
+    const settings = wantsGlobalChange ? await updateSettings(globalPatch) : await getSettings();
+    const userSettings = Object.keys(userPatch).length
+      ? await updateUserSettings(user.userId, userPatch)
+      : await getUserSettings(user.userId);
+
     if (
-      Object.prototype.hasOwnProperty.call(body, "comboStrategy") ||
-      Object.prototype.hasOwnProperty.call(body, "comboStickyRoundRobinLimit") ||
-      Object.prototype.hasOwnProperty.call(body, "comboStrategies")
+      Object.prototype.hasOwnProperty.call(userPatch, "outboundProxyEnabled") ||
+      Object.prototype.hasOwnProperty.call(userPatch, "outboundProxyUrl") ||
+      Object.prototype.hasOwnProperty.call(userPatch, "outboundNoProxy")
+    ) {
+      applyOutboundProxyEnv({ ...settings, ...userSettings });
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(userPatch, "comboStrategy") ||
+      Object.prototype.hasOwnProperty.call(userPatch, "comboStickyRoundRobinLimit") ||
+      Object.prototype.hasOwnProperty.call(userPatch, "comboStrategies")
     ) {
       resetComboRotation();
     }
 
-    const { password, oidcClientSecret, ...safeSettings } = settings;
-    safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
-    return NextResponse.json(safeSettings, { headers: SETTINGS_RESPONSE_HEADERS });
+    const { password: _pw, oidcClientSecret, ...safeSettings } = settings;
+    const merged = { ...safeSettings, ...userSettings };
+    merged.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
+    return NextResponse.json(merged, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
     console.log("Error updating settings:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });

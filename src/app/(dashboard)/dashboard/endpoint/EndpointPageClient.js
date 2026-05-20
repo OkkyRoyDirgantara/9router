@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal } from "@/shared/components";
+import { cn } from "@/shared/utils/cn";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 const TUNNEL_BENEFITS = [
@@ -45,10 +46,12 @@ export default function APIPageClient({ machineId }) {
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyAllowedProviders, setNewKeyAllowedProviders] = useState([]);
+  const [newKeyAllowedConnectionIds, setNewKeyAllowedConnectionIds] = useState([]);
+  const [availableConnections, setAvailableConnections] = useState([]);
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
 
-  const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
   const [hasPassword, setHasPassword] = useState(true);
   const [tunnelDashboardAccess, setTunnelDashboardAccess] = useState(false);
@@ -213,7 +216,6 @@ export default function APIPageClient({ machineId }) {
       ]);
       if (settingsRes.ok) {
         const data = await settingsRes.json();
-        setRequireApiKey(data.requireApiKey || false);
         setRequireLogin(data.requireLogin !== false);
         setHasPassword(data.hasPassword || false);
         setTunnelDashboardAccess(data.tunnelDashboardAccess || false);
@@ -253,19 +255,6 @@ export default function APIPageClient({ machineId }) {
       if (res.ok) setTunnelDashboardAccess(value);
     } catch (error) {
       console.log("Error updating tunnelDashboardAccess:", error);
-    }
-  };
-
-  const handleRequireApiKey = async (value) => {
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requireApiKey: value }),
-      });
-      if (res.ok) setRequireApiKey(value);
-    } catch (error) {
-      console.log("Error updating requireApiKey:", error);
     }
   };
 
@@ -658,24 +647,39 @@ export default function APIPageClient({ machineId }) {
 
   const handleCreateKey = async () => {
     if (!newKeyName.trim()) return;
-
     try {
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newKeyName }),
+        body: JSON.stringify({
+          name: newKeyName,
+          allowedProviders: newKeyAllowedProviders,
+          allowedConnectionIds: newKeyAllowedConnectionIds,
+        }),
       });
       const data = await res.json();
-
       if (res.ok) {
         setCreatedKey(data.key);
         await fetchData();
         setNewKeyName("");
+        setNewKeyAllowedProviders([]);
+        setNewKeyAllowedConnectionIds([]);
         setShowAddModal(false);
       }
     } catch (error) {
       console.log("Error creating key:", error);
     }
+  };
+
+  const openAddKeyModal = async () => {
+    setShowAddModal(true);
+    try {
+      const res = await fetch("/api/providers");
+      if (res.ok) {
+        const data = await res.json();
+        setAvailableConnections(data.connections || []);
+      }
+    } catch {}
   };
 
   const handleDeleteKey = async (id) => {
@@ -845,13 +849,7 @@ export default function APIPageClient({ machineId }) {
               <Button
                 size="sm"
                 icon="cloud_upload"
-                onClick={() => {
-                  if (!requireApiKey) {
-                    setTunnelStatus({ type: "error", message: "Security required: Enable \"Require API key\" before activating the tunnel." });
-                    return;
-                  }
-                  setShowEnableTunnelModal(true);
-                }}
+                onClick={() => setShowEnableTunnelModal(true)}
               >
                 Enable
               </Button>
@@ -938,27 +936,19 @@ export default function APIPageClient({ machineId }) {
         </div>
 
         {/* Security warnings when tunnel or tailscale is active */}
-        {(tunnelEnabled || tsEnabled) && (
+        {(tunnelEnabled || tsEnabled) && (!requireLogin || !hasPassword) && (
           <div className="mt-4 flex flex-col gap-2">
-            {!requireApiKey && (
-              <SecurityWarning
-                message="Require API key is disabled — your endpoint is publicly accessible without authentication."
-                action={{ label: "Enable", href: "#require-api-key" }}
-              />
-            )}
-            {(!requireLogin || !hasPassword) && (
-              <SecurityWarning
-                message={
-                  !requireLogin
-                    ? "Require login is disabled — anyone can access your dashboard via tunnel."
-                    : "Dashboard uses the default password — change it in Profile settings."
-                }
-                action={{
-                  label: !requireLogin ? "Enable" : "Change password",
-                  href: "/dashboard/profile",
-                }}
-              />
-            )}
+            <SecurityWarning
+              message={
+                !requireLogin
+                  ? "Require login is disabled — anyone can access your dashboard via tunnel."
+                  : "Dashboard uses the default password — change it in Profile settings."
+              }
+              action={{
+                label: !requireLogin ? "Enable" : "Change password",
+                href: "/dashboard/profile",
+              }}
+            />
           </div>
         )}
 
@@ -1058,22 +1048,9 @@ export default function APIPageClient({ machineId }) {
             <span className="material-symbols-outlined text-primary">vpn_key</span>
             API Keys
           </h2>
-          <Button icon="add" onClick={() => setShowAddModal(true)}>
+          <Button icon="add" onClick={openAddKeyModal}>
             Create Key
           </Button>
-        </div>
-
-        <div className="flex items-center justify-between pb-4 mb-4 border-b border-border">
-          <div>
-            <p className="font-medium">Require API key</p>
-            <p className="text-sm text-text-muted">
-              Requests without a valid key will be rejected
-            </p>
-          </div>
-          <Toggle
-            checked={requireApiKey}
-            onChange={() => handleRequireApiKey(!requireApiKey)}
-          />
         </div>
 
         {keys.length === 0 ? (
@@ -1083,7 +1060,7 @@ export default function APIPageClient({ machineId }) {
             </div>
             <p className="text-text-main font-medium mb-1">No API keys yet</p>
             <p className="text-sm text-text-muted mb-4">Create your first API key to get started</p>
-            <Button icon="add" onClick={() => setShowAddModal(true)}>
+            <Button icon="add" onClick={openAddKeyModal}>
               Create Key
             </Button>
           </div>
@@ -1165,6 +1142,8 @@ export default function APIPageClient({ machineId }) {
         onClose={() => {
           setShowAddModal(false);
           setNewKeyName("");
+          setNewKeyAllowedProviders([]);
+          setNewKeyAllowedConnectionIds([]);
         }}
       >
         <div className="flex flex-col gap-4">
@@ -1174,6 +1153,53 @@ export default function APIPageClient({ machineId }) {
             onChange={(e) => setNewKeyName(e.target.value)}
             placeholder="Production Key"
           />
+
+          <ScopePicker
+            label="Allowed Providers"
+            hint="Empty = all providers allowed"
+            addLabel="Add Provider"
+            modalTitle="Select Providers"
+            selected={newKeyAllowedProviders}
+            options={
+              Array.from(new Set(availableConnections.map((c) => c.provider)))
+                .filter(Boolean)
+                .map((p) => ({ value: p, label: p }))
+            }
+            onAdd={(v) =>
+              setNewKeyAllowedProviders((prev) =>
+                prev.includes(v) ? prev : [...prev, v]
+              )
+            }
+            onRemove={(v) =>
+              setNewKeyAllowedProviders((prev) => prev.filter((x) => x !== v))
+            }
+            renderChip={(v) => v}
+          />
+
+          <ScopePicker
+            label="Allowed Accounts"
+            hint="Empty = all your accounts allowed"
+            addLabel="Add Account"
+            modalTitle="Select Accounts"
+            selected={newKeyAllowedConnectionIds}
+            options={availableConnections.map((c) => ({
+              value: c.id,
+              label: `${c.provider} · ${c.name || c.email || c.id.slice(0, 8)}`,
+            }))}
+            onAdd={(v) =>
+              setNewKeyAllowedConnectionIds((prev) =>
+                prev.includes(v) ? prev : [...prev, v]
+              )
+            }
+            onRemove={(v) =>
+              setNewKeyAllowedConnectionIds((prev) => prev.filter((x) => x !== v))
+            }
+            renderChip={(v) => {
+              const c = availableConnections.find((x) => x.id === v);
+              return c ? `${c.provider} · ${c.name || c.email || c.id.slice(0, 8)}` : v.slice(0, 8);
+            }}
+          />
+
           <div className="flex gap-2">
             <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
               Create
@@ -1182,6 +1208,8 @@ export default function APIPageClient({ machineId }) {
               onClick={() => {
                 setShowAddModal(false);
                 setNewKeyName("");
+                setNewKeyAllowedProviders([]);
+                setNewKeyAllowedConnectionIds([]);
               }}
               variant="ghost"
               fullWidth
@@ -1464,4 +1492,126 @@ function SecurityWarning({ message, action }) {
 
 APIPageClient.propTypes = {
   machineId: PropTypes.string.isRequired,
+};
+
+function ScopePicker({ label, hint, addLabel, modalTitle, selected, options, onAdd, onRemove, renderChip }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const selectedSet = new Set(selected);
+  const filtered = options.filter((o) => {
+    if (!query.trim()) return true;
+    const q = query.toLowerCase();
+    return o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q);
+  });
+
+  return (
+    <>
+      <div>
+        <label className="text-sm font-medium mb-1.5 block">{label}</label>
+
+        {selected.length === 0 ? (
+          <div className="text-center py-3 border border-dashed border-black/10 dark:border-white/10 rounded-lg bg-black/[0.01] dark:bg-white/[0.01]">
+            <p className="text-xs text-text-muted">{hint}</p>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {selected.map((v) => (
+              <span
+                key={v}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-primary/10 text-primary text-xs"
+              >
+                {renderChip ? renderChip(v) : v}
+                <button
+                  type="button"
+                  onClick={() => onRemove(v)}
+                  className="opacity-70 hover:opacity-100"
+                  title="Remove"
+                >
+                  <span className="material-symbols-outlined text-[14px]">close</span>
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => { setQuery(""); setPickerOpen(true); }}
+          className="w-full mt-2 py-2 border border-dashed border-black/10 dark:border-white/10 rounded-lg text-xs text-primary font-medium hover:text-primary hover:border-primary/50 transition-colors flex items-center justify-center gap-1"
+        >
+          <span className="material-symbols-outlined text-[16px]">add</span>
+          {addLabel}
+        </button>
+      </div>
+
+      <Modal
+        isOpen={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        title={modalTitle}
+      >
+        <div className="flex flex-col gap-3">
+          <Input
+            placeholder="Search…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            autoFocus
+          />
+
+          {filtered.length === 0 ? (
+            <div className="text-center py-6 text-xs text-text-muted">
+              {options.length === 0 ? "No options available" : "No matches"}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1 max-h-[55vh] overflow-y-auto sm:max-h-[350px]">
+              {filtered.map((o) => {
+                const isSelected = selectedSet.has(o.value);
+                return (
+                  <button
+                    type="button"
+                    key={o.value}
+                    onClick={() => {
+                      if (isSelected) onRemove(o.value);
+                      else onAdd(o.value);
+                    }}
+                    className={cn(
+                      "flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm transition-colors text-left",
+                      isSelected
+                        ? "bg-primary/10 text-primary"
+                        : "hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
+                    )}
+                  >
+                    <span className="truncate">{o.label}</span>
+                    <span className="material-symbols-outlined text-[18px] shrink-0">
+                      {isSelected ? "check_circle" : "add_circle"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="flex justify-end pt-1">
+            <Button onClick={() => setPickerOpen(false)} variant="ghost" size="sm">
+              Done
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+ScopePicker.propTypes = {
+  label: PropTypes.string.isRequired,
+  hint: PropTypes.string,
+  addLabel: PropTypes.string.isRequired,
+  modalTitle: PropTypes.string.isRequired,
+  selected: PropTypes.arrayOf(PropTypes.string).isRequired,
+  options: PropTypes.arrayOf(
+    PropTypes.shape({ value: PropTypes.string.isRequired, label: PropTypes.string.isRequired })
+  ).isRequired,
+  onAdd: PropTypes.func.isRequired,
+  onRemove: PropTypes.func.isRequired,
+  renderChip: PropTypes.func,
 };

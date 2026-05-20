@@ -180,7 +180,7 @@ export default function ProfilePage() {
     setPassStatus({ type: "", message: "" });
 
     try {
-      const res = await fetch("/api/settings", {
+      const res = await fetch("/api/auth/me/password", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

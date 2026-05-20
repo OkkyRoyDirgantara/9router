@@ -5,6 +5,12 @@ import {
   updateProviderConnection,
   deleteProviderConnection,
 } from "@/models";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
+
+function ownerScope(user) {
+  if (!user) return undefined;
+  return user.role === "admin" ? null : user.userId;
+}
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -62,8 +68,10 @@ function shouldMergeProviderSpecificData(existing, incoming, hasLegacyProxy, has
 // GET /api/providers/[id] - Get single connection
 export async function GET(request, { params }) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const { id } = await params;
-    const connection = await getProviderConnectionById(id);
+    const connection = await getProviderConnectionById(id, ownerScope(user));
 
     if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
@@ -86,6 +94,8 @@ export async function GET(request, { params }) {
 // PUT /api/providers/[id] - Update connection
 export async function PUT(request, { params }) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const { id } = await params;
     const body = await request.json();
     const {
@@ -101,7 +111,8 @@ export async function PUT(request, { params }) {
       providerSpecificData
     } = body;
 
-    const existing = await getProviderConnectionById(id);
+    const scope = ownerScope(user);
+    const existing = await getProviderConnectionById(id, scope);
     if (!existing) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
@@ -155,7 +166,7 @@ export async function PUT(request, { params }) {
       }
     }
 
-    const updated = await updateProviderConnection(id, updateData);
+    const updated = await updateProviderConnection(id, updateData, scope);
 
     // Hide sensitive fields
     const result = { ...updated };
@@ -174,9 +185,11 @@ export async function PUT(request, { params }) {
 // DELETE /api/providers/[id] - Delete connection
 export async function DELETE(request, { params }) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const { id } = await params;
 
-    const deleted = await deleteProviderConnection(id);
+    const deleted = await deleteProviderConnection(id, ownerScope(user));
     if (!deleted) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }

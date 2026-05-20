@@ -247,6 +247,22 @@ export async function saveRequestUsage(entry) {
     if (!entry.timestamp) entry.timestamp = new Date().toISOString();
     entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
 
+    // Infer owning user from the API key when caller didn't pass it.
+    if (!entry.userId && entry.apiKey) {
+      try {
+        const { getApiKeyByKey } = await import("./apiKeysRepo.js");
+        const row = await getApiKeyByKey(entry.apiKey);
+        if (row?.userId) entry.userId = row.userId;
+      } catch {}
+    }
+    if (!entry.userId && entry.connectionId) {
+      try {
+        const { getProviderConnectionById } = await import("./connectionsRepo.js");
+        const conn = await getProviderConnectionById(entry.connectionId);
+        if (conn?.userId) entry.userId = conn.userId;
+      } catch {}
+    }
+
     const tokens = entry.tokens || {};
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
@@ -255,8 +271,9 @@ export async function saveRequestUsage(entry) {
     // better-sqlite3 is sync → no JS yield mid-transaction → no race in same process.
     db.transaction(() => {
       db.run(
-        `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO usageHistory(userId, timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
+          entry.userId || null,
           entry.timestamp, entry.provider || null, entry.model || null,
           entry.connectionId || null, entry.apiKey || null, entry.endpoint || null,
           promptTokens, completionTokens, entry.cost || 0, entry.status || "ok",
@@ -291,6 +308,7 @@ export async function getUsageHistory(filter = {}) {
   const conds = [];
   const params = [];
 
+  if (filter.userId) { conds.push("userId = ?"); params.push(filter.userId); }
   if (filter.provider) { conds.push("provider = ?"); params.push(filter.provider); }
   if (filter.model) { conds.push("model = ?"); params.push(filter.model); }
   if (filter.startDate) { conds.push("timestamp >= ?"); params.push(new Date(filter.startDate).toISOString()); }
@@ -316,8 +334,9 @@ function loadDaysInRange(adapter, maxDays) {
   return adapter.all(`SELECT dateKey, data FROM usageDaily WHERE dateKey >= ?`, [cutoffKey]);
 }
 
-export async function getUsageStats(period = "all") {
+export async function getUsageStats(period = "all", options = {}) {
   const db = await getAdapter();
+  const userId = options && options.userId ? options.userId : null;
 
   const [{ getProviderConnections }, { getApiKeys }, { getProviderNodes }] = await Promise.all([
     import("./connectionsRepo.js"),
@@ -415,7 +434,9 @@ export async function getUsageStats(period = "all") {
     }
   }
 
-  const useDailySummary = period !== "24h" && period !== "today";
+  // Daily summaries are aggregated globally — when a userId filter is active
+  // we always go through live history so the per-user view is accurate.
+  const useDailySummary = !userId && period !== "24h" && period !== "today";
 
   if (useDailySummary) {
     const periodDays = { "7d": 7, "30d": 30, "60d": 60 };
@@ -529,18 +550,24 @@ export async function getUsageStats(period = "all") {
       if (stats.byEndpoint[endpointKey] && new Date(ts) > new Date(stats.byEndpoint[endpointKey].lastUsed)) stats.byEndpoint[endpointKey].lastUsed = ts;
     }
   } else {
-    // 24h / today: live history
+    // 24h / today / per-user: live history
     let cutoff;
     if (period === "today") {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
       cutoff = startOfDay.toISOString();
-    } else {
+    } else if (period === "24h") {
       cutoff = new Date(Date.now() - PERIOD_MS["24h"]).toISOString();
+    } else {
+      const days = { "7d": 7, "30d": 30, "60d": 60 }[period];
+      cutoff = days ? new Date(Date.now() - days * 86400000).toISOString() : new Date(0).toISOString();
     }
+    const liveConds = ["timestamp >= ?"];
+    const liveParams = [cutoff];
+    if (userId) { liveConds.push("userId = ?"); liveParams.push(userId); }
     const filtered = db.all(
-      `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, tokens FROM usageHistory WHERE timestamp >= ?`,
-      [cutoff]
+      `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, tokens FROM usageHistory WHERE ${liveConds.join(" AND ")}`,
+      liveParams
     );
 
     for (const r of filtered) {

@@ -1,4 +1,4 @@
-import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
+import { getProviderConnections, validateApiKey, getApiKeyByKey, updateProviderConnection, getSettings } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
@@ -21,6 +21,19 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
+
+  // Resolve API key context (used for per-user + allowlist enforcement).
+  let apiKeyContext = options?.apiKeyContext || null;
+  if (!apiKeyContext && options?.apiKey) {
+    const row = await getApiKeyByKey(options.apiKey);
+    if (row && row.isActive) {
+      apiKeyContext = {
+        userId: row.userId || null,
+        allowedProviders: Array.isArray(row.allowedProviders) ? row.allowedProviders : null,
+        allowedConnectionIds: Array.isArray(row.allowedConnectionIds) ? row.allowedConnectionIds : null,
+      };
+    }
+  }
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
   let resolveMutex;
@@ -52,12 +65,27 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       };
     }
 
-    const connections = await getProviderConnections({ provider: providerId, isActive: true });
+    // If the request carries an API key, enforce its allowlist before we ever
+    // touch other users' connections. allowedProviders=[] (null) ⇒ no provider
+    // restriction; allowedConnectionIds=[] (null) ⇒ no connection restriction.
+    if (apiKeyContext?.allowedProviders && !apiKeyContext.allowedProviders.includes(providerId)) {
+      log.warn("AUTH", `apiKey not allowed for provider=${providerId}`);
+      return { apiKeyForbidden: true, reason: "provider_not_allowed" };
+    }
+
+    const connFilter = { provider: providerId, isActive: true };
+    if (apiKeyContext?.userId) connFilter.userId = apiKeyContext.userId;
+    let connections = await getProviderConnections(connFilter);
+
+    if (apiKeyContext?.allowedConnectionIds) {
+      const allow = new Set(apiKeyContext.allowedConnectionIds);
+      connections = connections.filter((c) => allow.has(c.id));
+    }
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
     if (connections.length === 0) {
-      log.warn("AUTH", `No credentials for ${provider}`);
-      return null;
+      log.warn("AUTH", `No credentials for ${provider}${apiKeyContext ? " (after apiKey scope filter)" : ""}`);
+      return apiKeyContext ? { apiKeyForbidden: true, reason: "no_matching_connection" } : null;
     }
 
     // Filter out model-locked and excluded connections
@@ -304,4 +332,21 @@ export function extractApiKey(request) {
 export async function isValidApiKey(apiKey) {
   if (!apiKey) return false;
   return await validateApiKey(apiKey);
+}
+
+/**
+ * Fetch full API key context for per-user + allowlist enforcement.
+ * Returns { userId, allowedProviders, allowedConnectionIds, apiKey } | null.
+ */
+export async function getApiKeyContextFromKey(apiKey) {
+  if (!apiKey) return null;
+  const row = await getApiKeyByKey(apiKey);
+  if (!row || !row.isActive) return null;
+  return {
+    apiKey: row.key,
+    keyId: row.id,
+    userId: row.userId || null,
+    allowedProviders: Array.isArray(row.allowedProviders) ? row.allowedProviders : null,
+    allowedConnectionIds: Array.isArray(row.allowedConnectionIds) ? row.allowedConnectionIds : null,
+  };
 }

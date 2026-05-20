@@ -44,18 +44,15 @@ export async function handleSearch(request) {
     log.debug("AUTH", "No API key provided (local mode)");
   }
 
-  // Enforce API key if enabled in settings
   const settings = await getSettings();
-  if (settings.requireApiKey) {
-    if (!apiKey) {
-      log.warn("AUTH", "Missing API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-    }
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) {
-      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
-    }
+  if (!apiKey) {
+    log.warn("AUTH", "Missing API key");
+    return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
+  }
+  const valid = await isValidApiKey(apiKey);
+  if (!valid) {
+    log.warn("AUTH", "Invalid API key");
+    return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
   if (!providerInput || typeof providerInput !== "string") {
@@ -149,7 +146,12 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(providerId, excludeConnectionIds);
+    const credentials = await getProviderCredentials(providerId, excludeConnectionIds, null, { apiKey });
+
+    if (credentials?.apiKeyForbidden) {
+      log.warn("AUTH", `API key forbidden for ${providerId}: ${credentials.reason}`);
+      return errorResponse(HTTP_STATUS.FORBIDDEN, `API key is not authorized for provider: ${providerId}`);
+    }
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {

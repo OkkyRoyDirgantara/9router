@@ -37,11 +37,9 @@ export async function handleImageGeneration(request) {
 
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
-  if (settings.requireApiKey) {
-    if (!apiKey) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
-  }
+  if (!apiKey) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
+  const valid = await isValidApiKey(apiKey);
+  if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
@@ -91,7 +89,11 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId, apiKey });
+
+    if (credentials?.apiKeyForbidden) {
+      return errorResponse(HTTP_STATUS.FORBIDDEN, `API key is not authorized for provider: ${provider}`);
+    }
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {

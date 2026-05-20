@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSettings, validateApiKey } from "@/lib/localDb";
+import { getSettings, getApiKeyByKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { verifyDashboardAuthToken } from "@/lib/auth/dashboardSession";
 
@@ -112,13 +112,30 @@ function extractApiKey(request) {
 }
 
 async function hasValidApiKey(request) {
+  const ctx = await getApiKeyContext(request);
+  return !!ctx;
+}
+
+// Returns rich API key context when the request carries a valid key.
+// { apiKey, userId, allowedProviders, allowedConnectionIds } | null
+export async function getApiKeyContext(request) {
   const apiKey = extractApiKey(request);
-  if (!apiKey) return false;
-  return await validateApiKey(apiKey);
+  if (!apiKey) return null;
+  const row = await getApiKeyByKey(apiKey);
+  if (!row || !row.isActive) return null;
+  return {
+    apiKey: row.key,
+    keyId: row.id,
+    userId: row.userId || null,
+    allowedProviders: Array.isArray(row.allowedProviders) ? row.allowedProviders : null,
+    allowedConnectionIds: Array.isArray(row.allowedConnectionIds) ? row.allowedConnectionIds : null,
+  };
 }
 
 async function canAccessPublicLlmApi(request) {
-  if (isLocalRequest(request)) return true;
+  // CLI tools running on the host (machineId-derived token) keep working without
+  // a per-user API key. Browser/curl from localhost must present a valid API key
+  // so requests can be attributed to a user under the multi-user model.
   if (await hasValidCliToken(request)) return true;
   return await hasValidApiKey(request);
 }

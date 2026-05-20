@@ -53,6 +53,33 @@ export async function getDashboardAuthSession(token) {
   }
 }
 
+// Extract the authenticated dashboard user from a Next.js request.
+// Returns null when no valid cookie is present.
+export async function getDashboardUser(request) {
+  if (!request) return null;
+  const token = request.cookies?.get?.("auth_token")?.value;
+  if (!token) return null;
+  const session = await getDashboardAuthSession(token);
+  if (!session || !session.authenticated) return null;
+  return {
+    userId: session.userId || null,
+    username: session.username || null,
+    role: session.role || "user",
+  };
+}
+
+export async function requireDashboardUser(request) {
+  const user = await getDashboardUser(request);
+  if (!user || !user.userId) return null;
+  return user;
+}
+
+export async function requireDashboardAdmin(request) {
+  const user = await requireDashboardUser(request);
+  if (!user || user.role !== "admin") return null;
+  return user;
+}
+
 export async function setDashboardAuthCookie(cookieStore, request, claims = {}) {
   const token = await createDashboardAuthToken(claims);
   cookieStore.set("auth_token", token, {

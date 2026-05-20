@@ -3,6 +3,12 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
 
+// NOTE: `password` is no longer global — see `users` table / usersRepo.js.
+// User-scoped preferences (comboStrategy, providerStrategies, outboundProxy*,
+// stickyRoundRobinLimit, comboStickyRoundRobinLimit, comboStrategies,
+// rtkEnabled, cavemanEnabled, cavemanLevel) are also stored per-user via
+// userSettingsRepo.js. They remain in DEFAULT_SETTINGS as fallbacks for
+// callers that still read getSettings() directly.
 const DEFAULT_SETTINGS = {
   cloudEnabled: false,
   tunnelEnabled: false,

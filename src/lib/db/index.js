@@ -7,6 +7,18 @@ export {
   getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings,
 } from "./repos/settingsRepo.js";
 
+// Users
+export {
+  listUsers, getUserById, getUserByUsername,
+  createUser, updateUser, deleteUser,
+  verifyPassword, countAdmins, userCount,
+} from "./repos/usersRepo.js";
+
+// User settings (per-user preferences)
+export {
+  getUserSettings, updateUserSettings, exportUserSettings, DEFAULT_USER_SETTINGS,
+} from "./repos/userSettingsRepo.js";
+
 // Provider connections
 export {
   getProviderConnections, getProviderConnectionById,
@@ -29,7 +41,7 @@ export {
 
 // API keys
 export {
-  getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
+  getApiKeys, getApiKeyById, getApiKeyByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
 } from "./repos/apiKeysRepo.js";
 
 // Combos
