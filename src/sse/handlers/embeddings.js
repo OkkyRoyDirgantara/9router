@@ -5,7 +5,6 @@ import {
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
-import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { handleEmbeddingsCore } from "open-sse/handlers/embeddingsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -41,7 +40,6 @@ export async function handleEmbeddings(request) {
     log.debug("AUTH", "No API key provided (local mode)");
   }
 
-  const settings = await getSettings();
   if (!apiKey) {
     log.warn("AUTH", "Missing API key");
     return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");

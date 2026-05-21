@@ -1,16 +1,22 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
+import { requireDashboardAdmin } from "@/lib/auth/dashboardSession";
 
-export async function POST() {
+export async function POST(request) {
   if (process.env.NODE_ENV === "production") {
     return NextResponse.json({ success: false, message: "Not allowed in production" }, { status: 403 });
   }
 
-  const secret = process.env.SHUTDOWN_SECRET;
-  const authorization = headers().get("authorization");
-
-  if (!secret || authorization !== `Bearer ${secret}`) {
-    return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+  // Allow either: (1) an admin dashboard session, or (2) the legacy
+  // SHUTDOWN_SECRET bearer token (still required when no admin is logged in,
+  // e.g. ops scripts). Non-admin dashboard users are rejected.
+  const admin = await requireDashboardAdmin(request);
+  if (!admin) {
+    const secret = process.env.SHUTDOWN_SECRET;
+    const authorization = headers().get("authorization");
+    if (!secret || authorization !== `Bearer ${secret}`) {
+      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    }
   }
 
   const response = NextResponse.json({ success: true, message: "Shutting down..." });
@@ -21,4 +27,3 @@ export async function POST() {
 
   return response;
 }
-

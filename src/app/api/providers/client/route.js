@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getProviderConnections } from "@/lib/localDb";
 import { backfillCodexEmails } from "@/lib/oauth/providers";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 
 // Whitelist: only safe metadata fields exposed to UI
 const SAFE_FIELDS = [
@@ -42,10 +43,18 @@ function sanitize(c) {
 }
 
 // GET /api/providers/client - List connections for dashboard UI (whitelist only)
-export async function GET() {
+// Non-admin callers see only their own connections; admin sees all, or pass
+// ?all=1 explicitly (kept symmetric with /api/providers GET).
+export async function GET(request) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     await backfillCodexEmails();
-    const connections = await getProviderConnections();
+
+    const connections = await getProviderConnections(
+      user.role === "admin" ? {} : { userId: user.userId }
+    );
     return NextResponse.json({ connections: connections.map(sanitize) });
   } catch (error) {
     console.log("Error fetching providers for client:", error);

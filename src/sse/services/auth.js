@@ -1,4 +1,4 @@
-import { getProviderConnections, validateApiKey, getApiKeyByKey, updateProviderConnection, getSettings } from "@/lib/localDb";
+import { getProviderConnections, validateApiKey, getApiKeyByKey, updateProviderConnection, getSettings, getUserSettings } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
@@ -48,7 +48,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
       const settings = await getSettings();
-      const override = (settings.providerStrategies || {})[providerId] || {};
+      const userSettings = apiKeyContext?.userId ? await getUserSettings(apiKeyContext.userId) : {};
+      const providerStrategies = userSettings.providerStrategies !== undefined
+        ? userSettings.providerStrategies
+        : settings.providerStrategies;
+      const override = (providerStrategies || {})[providerId] || {};
       const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: override.proxyPoolId || "" });
       return {
         id: "noauth",
@@ -126,8 +130,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
 
     const settings = await getSettings();
+    const userSettings = apiKeyContext?.userId ? await getUserSettings(apiKeyContext.userId) : {};
+    // User-scoped providerStrategies/stickyRoundRobinLimit override global
+    const providerStrategies = userSettings.providerStrategies !== undefined
+      ? userSettings.providerStrategies
+      : settings.providerStrategies;
+    const effectiveStickyLimit = userSettings.stickyRoundRobinLimit !== undefined
+      ? userSettings.stickyRoundRobinLimit
+      : settings.stickyRoundRobinLimit;
     // Per-provider strategy overrides global setting
-    const providerOverride = (settings.providerStrategies || {})[providerId] || {};
+    const providerOverride = (providerStrategies || {})[providerId] || {};
     const strategy = providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
 
     let connection;
@@ -141,7 +153,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     if (connection) {
       // skip strategy
     } else if (strategy === "round-robin") {
-      const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
+      const stickyLimit = providerOverride.stickyRoundRobinLimit || effectiveStickyLimit || 3;
 
       // Sort by lastUsed (most recent first) to find current candidate
       const byRecency = [...availableConnections].sort((a, b) => {

@@ -5,7 +5,8 @@ import {
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
-import { getSettings, getCombos } from "@/lib/localDb";
+import { getCombos } from "@/lib/localDb";
+import { getEffectiveSettings } from "../services/effectiveSettings.js";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleSearchCore } from "open-sse/handlers/search/index.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -44,7 +45,6 @@ export async function handleSearch(request) {
     log.debug("AUTH", "No API key provided (local mode)");
   }
 
-  const settings = await getSettings();
   if (!apiKey) {
     log.warn("AUTH", "Missing API key");
     return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
@@ -54,6 +54,7 @@ export async function handleSearch(request) {
     log.warn("AUTH", "Invalid API key");
     return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
+  const settings = await getEffectiveSettings({ apiKey });
 
   if (!providerInput || typeof providerInput !== "string") {
     log.warn("SEARCH", "Missing provider/model");

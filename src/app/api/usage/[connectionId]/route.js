@@ -6,6 +6,7 @@ import { getUsageForProvider } from "open-sse/services/usage.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -105,12 +106,21 @@ async function refreshAndUpdateCredentials(connection, force = false, proxyOptio
 export async function GET(request, { params }) {
   let connection;
   try {
-    const { connectionId } = await params;
+    const user = await requireDashboardUser(request);
+    if (!user) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
+    const { connectionId } = await params;
 
     // Get connection from database
     connection = await getProviderConnectionById(connectionId);
     if (!connection) {
+      return Response.json({ error: "Connection not found" }, { status: 404 });
+    }
+
+    // Non-admin users can only inspect their own connections.
+    // Return 404 (not 403) so the endpoint doesn't leak existence of other
+    // users' connections and the dashboard treats it as "not in your list".
+    if (user.role !== "admin" && connection.userId && connection.userId !== user.userId) {
       return Response.json({ error: "Connection not found" }, { status: 404 });
     }
 

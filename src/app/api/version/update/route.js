@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { killAppProcesses, spawnUpdaterAndExit } from "@/lib/appUpdater";
+import { requireDashboardAdmin } from "@/lib/auth/dashboardSession";
 
-export async function POST() {
+export async function POST(request) {
+  const admin = await requireDashboardAdmin(request);
+  if (!admin) {
+    return NextResponse.json({ success: false, message: "Forbidden: admin only" }, { status: 403 });
+  }
+
   if (process.env.NODE_ENV !== "production") {
     return NextResponse.json(
       { success: false, message: "Update is only available in production build (9router CLI)" },

@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import { testSingleConnection } from "./testUtils.js";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 
-// POST /api/providers/[id]/test - Test connection
+// POST /api/providers/[id]/test - Test connection (scoped to caller)
 export async function POST(request, { params }) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const { id } = await params;
-    const result = await testSingleConnection(id);
+    const ownerScope = user.role === "admin" ? null : user.userId;
+    const result = await testSingleConnection(id, ownerScope);
 
     if (result.error === "Connection not found") {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });

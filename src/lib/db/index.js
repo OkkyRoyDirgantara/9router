@@ -177,6 +177,107 @@ export async function importDb(payload) {
   return await exportDb();
 }
 
+// Per-user export — only data owned by the given user. Excludes global config
+// (settings, modelAliases, mitmAlias, pricing) and shared resources
+// (providerNodes, proxyPools). Settings live in `userSettings`.
+export async function exportUserDb(userId) {
+  if (!userId) throw new Error("userId is required");
+  const db = await getAdapter();
+  const { exportUserSettings } = await import("./repos/userSettingsRepo.js");
+
+  return {
+    scope: "user",
+    userId,
+    userSettings: await exportUserSettings(userId),
+    providerConnections: db.all(`SELECT * FROM providerConnections WHERE userId = ?`, [userId])
+      .map((r) => ({
+        ...parseJson(r.data, {}),
+        id: r.id,
+        provider: r.provider,
+        authType: r.authType,
+        name: r.name,
+        email: r.email,
+        priority: r.priority,
+        isActive: r.isActive === 1,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      })),
+    apiKeys: db.all(`SELECT * FROM apiKeys WHERE userId = ?`, [userId])
+      .map((r) => ({
+        id: r.id,
+        key: r.key,
+        name: r.name,
+        machineId: r.machineId,
+        isActive: r.isActive === 1,
+        allowedProviders: parseJson(r.allowedProviders, null),
+        allowedConnectionIds: parseJson(r.allowedConnectionIds, null),
+        createdAt: r.createdAt,
+      })),
+    combos: db.all(`SELECT * FROM combos WHERE userId = ?`, [userId])
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        kind: r.kind,
+        models: parseJson(r.models, []),
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      })),
+  };
+}
+
+// Per-user import — replaces ONLY the caller's data. Always rewrites the
+// userId column to the caller's id so a payload cannot claim resources for
+// another user.
+export async function importUserDb(userId, payload) {
+  if (!userId) throw new Error("userId is required");
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Invalid user database payload");
+  }
+  const db = await getAdapter();
+  const { stringifyJson: stringify } = await import("./helpers/jsonCol.js");
+  const serializeList = (v) => (Array.isArray(v) && v.length ? stringify(v) : null);
+
+  db.transaction(() => {
+    // Wipe only rows owned by this user
+    db.run(`DELETE FROM providerConnections WHERE userId = ?`, [userId]);
+    db.run(`DELETE FROM apiKeys WHERE userId = ?`, [userId]);
+    db.run(`DELETE FROM combos WHERE userId = ?`, [userId]);
+    db.run(`DELETE FROM userSettings WHERE userId = ?`, [userId]);
+
+    if (payload.userSettings && typeof payload.userSettings === "object") {
+      db.run(
+        `INSERT INTO userSettings(userId, data) VALUES(?, ?) ON CONFLICT(userId) DO UPDATE SET data = excluded.data`,
+        [userId, stringify(payload.userSettings)]
+      );
+    }
+
+    for (const c of payload.providerConnections || []) {
+      const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, userId: _ignore, ...rest } = c;
+      if (!id || !provider) continue;
+      db.run(
+        `INSERT OR REPLACE INTO providerConnections(id, userId, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, userId, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringify(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const k of payload.apiKeys || []) {
+      if (!k.id || !k.key) continue;
+      db.run(
+        `INSERT OR REPLACE INTO apiKeys(id, userId, key, name, machineId, isActive, allowedProviders, allowedConnectionIds, createdAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [k.id, userId, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, serializeList(k.allowedProviders), serializeList(k.allowedConnectionIds), k.createdAt || new Date().toISOString()]
+      );
+    }
+    for (const c of payload.combos || []) {
+      if (!c.id || !c.name) continue;
+      db.run(
+        `INSERT OR REPLACE INTO combos(id, userId, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+        [c.id, userId, c.name, c.kind || null, stringify(c.models || []), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
+      );
+    }
+  });
+
+  return await exportUserDb(userId);
+}
+
 // Eager init helper (optional)
 export async function initDb() {
   await getAdapter();

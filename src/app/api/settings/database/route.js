@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
-import { exportDb, getSettings, importDb } from "@/lib/localDb";
+import { exportDb, importDb, exportUserDb, importUserDb, getSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 
-export async function GET() {
+export async function GET(request) {
   try {
-    const payload = await exportDb();
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const payload = user.role === "admin"
+      ? await exportDb()
+      : await exportUserDb(user.userId);
     return NextResponse.json(payload);
   } catch (error) {
     console.log("Error exporting database:", error);
@@ -14,15 +20,25 @@ export async function GET() {
 
 export async function POST(request) {
   try {
-    const payload = await request.json();
-    await importDb(payload);
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    // Ensure proxy settings take effect immediately after a DB import.
-    try {
-      const settings = await getSettings();
-      applyOutboundProxyEnv(settings);
-    } catch (err) {
-      console.warn("[Settings][DatabaseImport] Failed to re-apply outbound proxy env:", err);
+    const payload = await request.json();
+
+    if (user.role === "admin") {
+      await importDb(payload);
+      // Re-apply proxy env immediately after a full DB import.
+      try {
+        const settings = await getSettings();
+        applyOutboundProxyEnv(settings);
+      } catch (err) {
+        console.warn("[Settings][DatabaseImport] Failed to re-apply outbound proxy env:", err);
+      }
+    } else {
+      // Non-admin: only import data scoped to this user. userId is always
+      // rewritten to the caller's id inside importUserDb, so a payload cannot
+      // claim resources owned by anyone else.
+      await importUserDb(user.userId, payload);
     }
 
     return NextResponse.json({ success: true });

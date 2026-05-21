@@ -2,14 +2,21 @@ import { NextResponse } from "next/server";
 import { getRequestDetails } from "@/lib/requestDetailsDb";
 import { getProviderNodes } from "@/lib/localDb";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 
 /**
  * GET /api/usage/providers
- * Returns list of unique providers from request details
+ * Returns list of unique providers from request details. Non-admin callers
+ * only see providers that appear in their own request history.
  */
-export async function GET() {
+export async function GET(request) {
   try {
-    const { details } = await getRequestDetails({ pageSize: 9999 });
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const filter = { pageSize: 9999 };
+    if (user.role !== "admin") filter.userId = user.userId;
+    const { details } = await getRequestDetails(filter);
 
     // Extract unique providers
     const providerIds = [...new Set(details.map(r => r.provider).filter(Boolean))].sort();

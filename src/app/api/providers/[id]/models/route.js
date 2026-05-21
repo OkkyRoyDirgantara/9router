@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById } from "@/models";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
@@ -330,8 +331,11 @@ const PROVIDER_MODELS_CONFIG = {
  */
 export async function GET(request, { params }) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const { id } = await params;
-    const connection = await getProviderConnectionById(id);
+    const ownerScope = user.role === "admin" ? null : user.userId;
+    const connection = await getProviderConnectionById(id, ownerScope);
 
     if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getProviderConnections } from "@/models";
+import { requireDashboardUser } from "@/lib/auth/dashboardSession";
 import {
   FREE_PROVIDERS,
   OAUTH_PROVIDERS,
@@ -42,6 +43,8 @@ function isCompatibleProvider(providerId) {
 // POST /api/providers/test-batch - Test multiple connections by group
 export async function POST(request) {
   try {
+    const user = await requireDashboardUser(request);
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const body = await request.json();
     const { mode, providerId } = body;
 
@@ -49,7 +52,10 @@ export async function POST(request) {
       return NextResponse.json({ error: "mode is required" }, { status: 400 });
     }
 
-    const allConnections = await getProviderConnections({ isActive: true });
+    const connFilter = { isActive: true };
+    if (user.role !== "admin") connFilter.userId = user.userId;
+    const allConnections = await getProviderConnections(connFilter);
+    const ownerScope = user.role === "admin" ? null : user.userId;
 
     let connectionsToTest = [];
     if (mode === "provider" && providerId) {
@@ -84,7 +90,7 @@ export async function POST(request) {
     const results = [];
     for (const conn of connectionsToTest) {
       try {
-        const data = await testSingleConnection(conn.id);
+        const data = await testSingleConnection(conn.id, ownerScope);
         results.push({
           provider: conn.provider,
           connectionId: conn.id,

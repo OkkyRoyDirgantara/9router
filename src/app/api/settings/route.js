@@ -16,6 +16,17 @@ export const revalidate = 0;
 const SETTINGS_RESPONSE_HEADERS = { "Cache-Control": "no-store" };
 const USER_KEYS = new Set(USER_SCOPED_SETTING_KEYS);
 
+// Non-admin callers see only their own per-user settings plus a small set of
+// safe, read-only fields that the dashboard UI relies on. Everything else
+// (oidc*, observability*, tunnel*, tailscale*, cloud*, requireLogin, etc.) is
+// admin-only and stripped from the response.
+const NON_ADMIN_GLOBAL_PASSTHROUGH = new Set([
+  "mitmRouterBaseUrl",
+  "ccFilterNaming",
+  "dnsToolEnabled",
+  "fallbackStrategy",
+]);
+
 function splitBody(body) {
   const userPatch = {};
   const globalPatch = {};
@@ -24,6 +35,18 @@ function splitBody(body) {
     else globalPatch[k] = v;
   }
   return { userPatch, globalPatch };
+}
+
+function projectForUser(merged, role) {
+  if (role === "admin") return merged;
+  const out = {};
+  for (const k of USER_KEYS) {
+    if (merged[k] !== undefined) out[k] = merged[k];
+  }
+  for (const k of NON_ADMIN_GLOBAL_PASSTHROUGH) {
+    if (merged[k] !== undefined) out[k] = merged[k];
+  }
+  return out;
 }
 
 export async function GET(request) {
@@ -40,8 +63,10 @@ export async function GET(request) {
     const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS === "true";
     const enableTranslator = process.env.ENABLE_TRANSLATOR === "true";
 
+    const projected = projectForUser(merged, user.role);
+
     return NextResponse.json({
-      ...merged,
+      ...projected,
       enableRequestLogs,
       enableTranslator,
       hasPassword: true, // per-user password lives in users table
@@ -69,19 +94,21 @@ export async function PATCH(request) {
     }
 
     const { userPatch, globalPatch } = splitBody(body);
-    const wantsGlobalChange = Object.keys(globalPatch).length > 0;
-    if (wantsGlobalChange && user.role !== "admin") {
-      return NextResponse.json({ error: "Forbidden: admin only" }, { status: 403 });
-    }
+    const isAdmin = user.role === "admin";
+    // Non-admin: silently drop any attempt to mutate global settings — only
+    // their own user-scoped fields are persisted. This avoids 403 churn when
+    // the UI sends mixed payloads.
+    const effectiveGlobalPatch = isAdmin ? globalPatch : {};
+    const wantsGlobalChange = Object.keys(effectiveGlobalPatch).length > 0;
 
     if (
-      Object.prototype.hasOwnProperty.call(globalPatch, "oidcClientSecret") &&
-      (!globalPatch.oidcClientSecret || !String(globalPatch.oidcClientSecret).trim())
+      Object.prototype.hasOwnProperty.call(effectiveGlobalPatch, "oidcClientSecret") &&
+      (!effectiveGlobalPatch.oidcClientSecret || !String(effectiveGlobalPatch.oidcClientSecret).trim())
     ) {
-      delete globalPatch.oidcClientSecret;
+      delete effectiveGlobalPatch.oidcClientSecret;
     }
 
-    const settings = wantsGlobalChange ? await updateSettings(globalPatch) : await getSettings();
+    const settings = wantsGlobalChange ? await updateSettings(effectiveGlobalPatch) : await getSettings();
     const userSettings = Object.keys(userPatch).length
       ? await updateUserSettings(user.userId, userPatch)
       : await getUserSettings(user.userId);
@@ -105,7 +132,8 @@ export async function PATCH(request) {
     const { password: _pw, oidcClientSecret, ...safeSettings } = settings;
     const merged = { ...safeSettings, ...userSettings };
     merged.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
-    return NextResponse.json(merged, { headers: SETTINGS_RESPONSE_HEADERS });
+    const projected = projectForUser(merged, user.role);
+    return NextResponse.json(projected, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
     console.log("Error updating settings:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });

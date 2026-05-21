@@ -195,11 +195,23 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
   statsEmitter.emit("pending");
 }
 
-export async function getActiveRequests() {
+export async function getActiveRequests(options = {}) {
+  const userId = options && options.userId ? options.userId : null;
   const activeRequests = [];
   const connectionMap = await getConnectionMapCached();
 
+  // Build user-scoped connection id set when filtering by userId
+  let allowedConnIds = null;
+  if (userId) {
+    try {
+      const { getProviderConnections } = await import("./connectionsRepo.js");
+      const conns = await getProviderConnections({ userId });
+      allowedConnIds = new Set(conns.map((c) => c.id));
+    } catch { allowedConnIds = new Set(); }
+  }
+
   for (const [connectionId, models] of Object.entries(pendingRequests.byAccount)) {
+    if (allowedConnIds && !allowedConnIds.has(connectionId)) continue;
     for (const [modelKey, count] of Object.entries(models)) {
       if (count > 0) {
         const accountName = connectionMap[connectionId] || `Account ${connectionId.slice(0, 8)}...`;
@@ -215,7 +227,11 @@ export async function getActiveRequests() {
 
   await ensureRingInitialized();
   const seen = new Set();
-  const recentRequests = [...recentRing.items]
+  let ringItems = recentRing.items;
+  if (allowedConnIds) {
+    ringItems = ringItems.filter((e) => !e.connectionId || allowedConnIds.has(e.connectionId));
+  }
+  const recentRequests = [...ringItems]
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
     .map((e) => {
       const t = e.tokens || {};
@@ -644,9 +660,13 @@ export async function getUsageStats(period = "all", options = {}) {
   return stats;
 }
 
-export async function getChartData(period = "7d") {
+export async function getChartData(period = "7d", options = {}) {
   const db = await getAdapter();
+  const userId = options && options.userId ? options.userId : null;
   const now = Date.now();
+
+  const userConds = userId ? " AND userId = ?" : "";
+  const userParams = userId ? [userId] : [];
 
   if (period === "today") {
     const bucketCount = 24;
@@ -659,8 +679,8 @@ export async function getChartData(period = "7d") {
     const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
 
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
-      [new Date(startTime).toISOString()]
+      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?${userConds}`,
+      [new Date(startTime).toISOString(), ...userParams]
     );
     for (const r of rows) {
       const t = new Date(r.timestamp).getTime();
@@ -682,8 +702,8 @@ export async function getChartData(period = "7d") {
     const buckets = Array.from({ length: bucketCount }, (_, i) => ({ label: labelFn(startTime + i * bucketMs), tokens: 0, cost: 0 }));
 
     const rows = db.all(
-      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
-      [new Date(startTime).toISOString()]
+      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?${userConds}`,
+      [new Date(startTime).toISOString(), ...userParams]
     );
     for (const r of rows) {
       const t = new Date(r.timestamp).getTime();
@@ -698,6 +718,33 @@ export async function getChartData(period = "7d") {
   const bucketCount = period === "7d" ? 7 : period === "30d" ? 30 : 60;
   const today = new Date();
   const labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  // When filtering by user, the global `usageDaily` aggregate is not accurate
+  // — bucket live history per day instead.
+  if (userId) {
+    const startDay = new Date(today);
+    startDay.setHours(0, 0, 0, 0);
+    startDay.setDate(startDay.getDate() - (bucketCount - 1));
+    const dayMap = {};
+    const rows = db.all(
+      `SELECT timestamp, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ? AND userId = ?`,
+      [startDay.toISOString(), userId]
+    );
+    for (const r of rows) {
+      const d = new Date(r.timestamp);
+      const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      if (!dayMap[dateKey]) dayMap[dateKey] = { tokens: 0, cost: 0 };
+      dayMap[dateKey].tokens += (r.promptTokens || 0) + (r.completionTokens || 0);
+      dayMap[dateKey].cost += r.cost || 0;
+    }
+    return Array.from({ length: bucketCount }, (_, i) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - (bucketCount - 1 - i));
+      const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const dd = dayMap[dateKey];
+      return { label: labelFn(d), tokens: dd ? dd.tokens : 0, cost: dd ? dd.cost : 0 };
+    });
+  }
 
   // Build map of dateKey → day data
   const dayRows = loadDaysInRange(db, bucketCount);
@@ -725,13 +772,19 @@ function formatLogDate(date = new Date()) {
 // No-op: request log is now derived from usageHistory table on read.
 export async function appendRequestLog() {}
 
-export async function getRecentLogs(limit = 200) {
+export async function getRecentLogs(limit = 200, options = {}) {
   try {
     const db = getAdapter();
-    const rows = db.all(
-      `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`,
-      [limit],
-    );
+    const userId = options && options.userId ? options.userId : null;
+    const rows = userId
+      ? db.all(
+          `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens FROM usageHistory WHERE userId = ? ORDER BY id DESC LIMIT ?`,
+          [userId, limit],
+        )
+      : db.all(
+          `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`,
+          [limit],
+        );
     if (!rows.length) return [];
 
     const connMap = {};

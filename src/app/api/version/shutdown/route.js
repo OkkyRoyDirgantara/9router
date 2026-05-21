@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { killAppProcesses } from "@/lib/appUpdater";
+import { requireDashboardAdmin } from "@/lib/auth/dashboardSession";
 
-// Shutdown app to release file locks for manual update
-export async function POST() {
+// Shutdown app to release file locks for manual update — admin only.
+export async function POST(request) {
+  const admin = await requireDashboardAdmin(request);
+  if (!admin) {
+    return NextResponse.json({ success: false, message: "Forbidden: admin only" }, { status: 403 });
+  }
+
   try {
     await killAppProcesses();
   } catch { /* best effort */ }
